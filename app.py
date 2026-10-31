@@ -4,6 +4,7 @@ from fastapi.responses import HTMLResponse
 import joblib
 import pandas as pd
 import requests
+import traceback
 
 app = FastAPI(
     title="Valledupar Rain Predictor API",
@@ -159,71 +160,72 @@ def predecir_clima():
         status_code=500, detail="El modelo no está cargado en el servidor."
     )
 
-  url = "https://api.open-meteo.com/v1/forecast"
-  params = {
-      "latitude": 10.44,
-      "longitude": -73.25,
-      "hourly": [
-          "precipitation",
-          "dew_point_2m",
-          "cloud_cover",
-          "wind_direction_10m",
-          "temperature_2m",
-          "relative_humidity_2m",
-          "surface_pressure",
-          "wind_speed_10m",
-      ],
-      "timezone": "America/Bogota",
-      "past_days": 1,
-  }
-
   try:
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": 10.44,
+        "longitude": -73.25,
+        "hourly": [
+            "precipitation",
+            "dew_point_2m",
+            "cloud_cover",
+            "wind_direction_10m",
+            "temperature_2m",
+            "relative_humidity_2m",
+            "surface_pressure",
+            "wind_speed_10m",
+        ],
+        "timezone": "America/Bogota",
+        "past_days": 1,
+    }
+
     response = requests.get(url, params=params, timeout=30)
     response.raise_for_status()
     data = response.json()
+
+    df = pd.DataFrame(data["hourly"])
+    df["time"] = pd.to_datetime(df["time"])
+
+    df["hora"] = df["time"].dt.hour
+    df["mes"] = df["time"].dt.month
+
+    for col in [
+        "precipitation",
+        "relative_humidity_2m",
+        "surface_pressure",
+        "dew_point_2m",
+    ]:
+      df[f"{col}_lag1"] = df[col].shift(1)
+      df[f"{col}_lag2"] = df[col].shift(2)
+
+    hoy_str = datetime.now().strftime("%Y-%m-%d")
+    df["solo_fecha"] = df["time"].dt.strftime("%Y-%m-%d")
+    df_hoy = df[df["solo_fecha"] == hoy_str].copy()
+
+    if df_hoy.empty:
+      raise HTTPException(
+          status_code=404, detail="No se encontraron datos para el día actual."
+      )
+
+    X_live = df_hoy[FEATURES]
+    df_hoy["probabilidad_lluvia"] = model.predict_proba(X_live)[:, 1] * 100
+
+    resultado = []
+    for _, row in df_hoy.iterrows():
+      resultado.append({
+          "tiempo": str(row["time"]),
+          "probabilidad_lluvia_porcentaje": round(
+              row["probabilidad_lluvia"], 2
+          ),  # type: ignore
+          "temperatura_celsius": row["temperature_2m"],
+          "humedad_relativa": row["relative_humidity_2m"],
+          "nubosidad": row["cloud_cover"],
+      })
+
+    return {"ciudad": "Valledupar", "pronostico_horario": resultado}
+
   except Exception as e:
-    raise HTTPException(
-        status_code=502,
-        detail=f"Error al conectar con Open-Meteo: {str(e)}",
-    )
-
-  df = pd.DataFrame(data["hourly"])
-  df["time"] = pd.to_datetime(df["time"])
-
-  df["hora"] = df["time"].dt.hour
-  df["mes"] = df["time"].dt.month
-
-  for col in [
-      "precipitation",
-      "relative_humidity_2m",
-      "surface_pressure",
-      "dew_point_2m",
-  ]:
-    df[f"{col}_lag1"] = df[col].shift(1)
-    df[f"{col}_lag2"] = df[col].shift(2)
-
-  hoy_str = datetime.now().strftime("%Y-%m-%d")
-  df["solo_fecha"] = df["time"].dt.strftime("%Y-%m-%d")
-  df_hoy = df[df["solo_fecha"] == hoy_str].copy()
-
-  if df_hoy.empty:
-    raise HTTPException(
-        status_code=404, detail="No se encontraron datos para el día actual."
-    )
-
-  X_live = df_hoy[FEATURES]
-  df_hoy["probabilidad_lluvia"] = model.predict_proba(X_live)[:, 1] * 100
-
-  resultado = []
-  for _, row in df_hoy.iterrows():
-    resultado.append({
-        "tiempo": str(row["time"]),
-        "probabilidad_lluvia_porcentaje": round(
-            row["probabilidad_lluvia"], 2
-        ),  # type: ignore
-        "temperatura_celsius": row["temperature_2m"],
-        "humedad_relativa": row["relative_humidity_2m"],
-        "nubosidad": row["cloud_cover"],
-    })
-
-  return {"ciudad": "Valledupar", "pronostico_horario": resultado}
+    # Esto imprimirá el error completo en los logs de Render para que sepamos exactamente qué falló
+    print("❌ ERROR DETALLADO EN /predecir:")
+    traceback.print_exc()
+    raise HTTPException(status_code=500, detail=str(e))
