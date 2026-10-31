@@ -41,7 +41,6 @@ FEATURES = [
 
 @app.get("/", response_class=HTMLResponse)
 def home():
-  # Interfaz gráfica moderna con Tailwind CSS
   html_content = """
     <!DOCTYPE html>
     <html lang="es">
@@ -59,28 +58,48 @@ def home():
                 <p class="text-slate-400 mt-2 text-sm md:text-base">Predicción de probabilidad de lluvia horaria basada en Machine Learning (XGBoost + Open-Meteo)</p>
             </header>
 
-            <div id="loading" class="text-center py-12">
-                <div class="inline-block animate-spin rounded-full h-10 w-10 border-4 border-blue-500 border-t-transparent"></div>
-                <p class="mt-4 text-slate-400">Consultando la atmósfera en tiempo real...</p>
+            <!-- Pantalla de Carga -->
+            <div id="loading" class="text-center py-16">
+                <div class="inline-block animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
+                <p class="mt-4 text-slate-300 font-medium">Despertando el servidor y consultando la atmósfera...</p>
+                <p class="text-xs text-slate-500 mt-1">Si es la primera vez que entras hoy, puede tardar unos segundos.</p>
             </div>
 
+            <!-- Contenedor de Error -->
+            <div id="error-container" class="hidden text-center py-12 bg-red-950/30 border border-red-500/30 rounded-2xl p-6">
+                <p class="text-red-400 font-bold text-lg">⚠️ ¡Ups! Algo falló al consultar la predicción.</p>
+                <p id="error-details" class="text-slate-400 text-sm mt-2 font-mono"></p>
+                <button onclick="cargarPronostico()" class="mt-5 bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold px-5 py-2.5 rounded-xl transition shadow-lg">
+                    🔄 Reintentar
+                </button>
+            </div>
+
+            <!-- Cuadrícula de Pronóstico -->
             <div id="grid-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 hidden"></div>
         </div>
 
         <script>
             async function cargarPronostico() {
+                const loading = document.getElementById('loading');
+                const errorContainer = document.getElementById('error-container');
+                const gridContainer = document.getElementById('grid-container');
+                
+                loading.style.display = 'block';
+                errorContainer.classList.add('hidden');
+                gridContainer.classList.add('hidden');
+                gridContainer.innerHTML = '';
+
                 try {
                     const response = await fetch('/predecir');
+                    if (!response.ok) throw new Error(`Error HTTP: ${response.status}`);
+                    
                     const data = await response.json();
                     
-                    document.getElementById('loading').style.display = 'none';
-                    const container = document.getElementById('grid-container');
-                    container.classList.remove('hidden');
+                    loading.style.display = 'none';
+                    gridContainer.classList.remove('hidden');
 
                     data.pronostico_horario.forEach(item => {
                         let prob = item.probabilidad_lluvia_porcentaje;
-                        
-                        // Estilos dinámicos según el nivel de riesgo de lluvia
                         let bgColor = "bg-slate-800/60 border-slate-700/50";
                         let badgeColor = "bg-blue-500/20 text-blue-300 border-blue-500/30";
                         let alertaTexto = "Normal";
@@ -117,10 +136,12 @@ def home():
                                 </div>
                             </div>
                         `;
-                        container.innerHTML += card;
+                        gridContainer.innerHTML += card;
                     });
                 } catch (error) {
-                    document.getElementById('loading').innerHTML = `<p class="text-red-400">❌ Error al cargar los datos del modelo.</p>`;
+                    loading.style.display = 'none';
+                    errorContainer.classList.remove('hidden');
+                    document.getElementById('error-details').innerText = error.message;
                 }
             }
             cargarPronostico();
