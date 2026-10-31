@@ -64,7 +64,6 @@ def test_api():
 def predecir_clima():
   if model is None:
     raise HTTPException(status_code=500, detail="Modelo no cargado")
-
   url = "https://api.open-meteo.com/v1/forecast"
   params = {
       "latitude": 10.44,
@@ -82,6 +81,28 @@ def predecir_clima():
       "timezone": "America/Bogota",
       "past_days": 1,
   }
+
+  # 🔑 IMPORTANTE: Open-Meteo bloquea o limita los requests sin un User-Agent claro en la nube
+  headers = {
+      "User-Agent": (
+          "ValleduparWeatherApp-StudentProject/1.0"
+          " (contacto@valledupar-ai.com)"
+      )
+  }
+
+  try:
+    response = requests.get(url, params=params, headers=headers, timeout=30)
+    response.raise_for_status()
+    data = response.json()
+  except requests.exceptions.HTTPError as http_err:
+    print(f"❌ Error HTTP de Open-Meteo: {http_err}")
+    raise HTTPException(
+        status_code=502,
+        detail=(
+            "Open-Meteo limitó temporalmente las peticiones desde Render (Error"
+            " 429). Intenta de nuevo en un minuto."
+        ),
+    )
 
   response = requests.get(url, params=params, timeout=30)
   data = response.json()
