@@ -59,11 +59,13 @@ def test_api():
     return {"status": "Error", "detalle": str(e)}
 
 
-# 2. Ruta de predicción completa
 @app.get("/predecir")
 def predecir_clima():
   if model is None:
-    raise HTTPException(status_code=500, detail="Modelo no cargado")
+    raise HTTPException(
+        status_code=500, detail="El modelo no está cargado en el servidor."
+    )
+
   url = "https://api.open-meteo.com/v1/forecast"
   params = {
       "latitude": 10.44,
@@ -82,7 +84,6 @@ def predecir_clima():
       "past_days": 1,
   }
 
-  # 🔑 IMPORTANTE: Open-Meteo bloquea o limita los requests sin un User-Agent claro en la nube
   headers = {
       "User-Agent": (
           "ValleduparWeatherApp-StudentProject/1.0"
@@ -92,43 +93,57 @@ def predecir_clima():
 
   try:
     response = requests.get(url, params=params, headers=headers, timeout=30)
-    response.raise_for_status()
     data = response.json()
-  except requests.exceptions.HTTPError as http_err:
-    print(f"❌ Error HTTP de Open-Meteo: {http_err}")
-    raise HTTPException(
-        status_code=502,
-        detail=(
-            "Open-Meteo limitó temporalmente las peticiones desde Render (Error"
-            " 429). Intenta de nuevo en un minuto."
-        ),
-    )
 
-  response = requests.get(url, params=params, timeout=30)
-  data = response.json()
+    # Validar si Open-Meteo devolvió un error
+    if "hourly" not in data:
+      print(f"⚠️ Respuesta extraña de Open-Meteo: {data}")
+      raise HTTPException(
+          status_code=502,
+          detail=f"Open-Meteo no devolvió datos horarios: {data}",
+      )
 
-  df = pd.DataFrame(data["hourly"])
-  df["time"] = pd.to_datetime(df["time"])
-  df["hora"] = df["time"].dt.hour
-  df["mes"] = df["time"].dt.month
+    df = pd.DataFrame(data["hourly"])
+    df["time"] = pd.to_datetime(df["time"])
 
-  for col in [
-      "precipitation",
-      "relative_humidity_2m",
-      "surface_pressure",
-      "dew_point_2m",
-  ]:
-    df[f"{col}_lag1"] = df[col].shift(1)
-    df[f"{col}_lag2"] = df[col].shift(2)
+    df["hora"] = df["time"].dt.hour
+    df["mes"] = df["time"].dt.month
 
-  hoy_str = datetime.now().strftime("%Y-%m-%d")
-  df["solo_fecha"] = df["time"].dt.strftime("%Y-%m-%d")
-  df_hoy = df[df["solo_fecha"] == hoy_str].copy()
+    for col in [
+        "precipitation",
+        "relative_humidity_2m",
+        "surface_pressure",
+        "dew_point_2m",
+    ]:
+      df[f"{col}_lag1"] = df[col].shift(1)
+      df[f"{col}_lag2"] = df[col].shift(2)
 
-  if df_hoy.empty:
-    raise HTTPException(status_code=404, detail="Sin datos para hoy")
+    hoy_str = datetime.now().strftime("%Y-%m-%d")
+    df["solo_fecha"] = df["time"].dt.strftime("%Y-%m-%d")
+    df_hoy = df[df["solo_fecha"] == hoy_str].copy()
 
-  X_live = df_hoy[FEATURES]
-  preds = model.predict_proba(X_live)[:, 1] * 100
+    if df_hoy.empty:
+      raise HTTPException(
+          status_code=404, detail="No se encontraron datos para el día actual."
+      )
 
-  return {"predicciones_raw": preds.tolist()}
+    X_live = df_hoy[FEATURES]
+    df_hoy["probabilidad_lluvia"] = model.predict_proba(X_live)[:, 1] * 100
+
+    resultado = []
+    for _, row in df_hoy.iterrows():
+      resultado.append({
+          "tiempo": str(row["time"]),
+          "probabilidad_lluvia_porcentaje": round(
+              row["probabilidad_lluvia"], 2
+          ),  # type: ignore
+          "temperatura_celsius": row["temperature_2m"],
+          "humedad_relativa": row["relative_humidity_2m"],
+          "nubosidad": row["cloud_cover"],
+      })
+
+    return {"ciudad": "Valledupar", "pronostico_horario": resultado}
+
+  except Exception as e:
+    print(f"❌ Error crítico en predecir_clima: {str(e)}")
+    raise HTTPException(status_code=500, detail=str(e))
