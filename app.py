@@ -3,7 +3,7 @@ from pathlib import Path
 import time
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Response
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 import joblib
 import pandas as pd
 import requests
@@ -56,6 +56,7 @@ def home():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg">
         <title>Radar de Lluvia - Valledupar (XGBoost)</title>
         <script src="https://cdn.tailwindcss.com"></script>
     </head>
@@ -179,6 +180,14 @@ def home():
     </html>
     """
   return html_content
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon():
+  return FileResponse(
+      BASE_DIR / "static" / "favicon.svg",
+      media_type="image/svg+xml",
+  )
 
 
 @app.head("/")
