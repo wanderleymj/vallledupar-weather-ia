@@ -1,5 +1,6 @@
 from datetime import datetime
 from pathlib import Path
+import time
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
@@ -17,6 +18,8 @@ app = FastAPI(
 
 TIMEZONE = ZoneInfo("America/Bogota")
 BASE_DIR = Path(__file__).resolve().parent
+OPEN_METEO_CACHE_SECONDS = 300
+_open_meteo_cache = {"expires_at": 0.0, "data": None}
 FEATURES = [
     "precipitation",
     "dew_point_2m",
@@ -178,6 +181,11 @@ def home():
   return html_content
 
 
+@app.head("/")
+def health_check():
+  return Response(status_code=200)
+
+
 @app.get("/predecir")
 def predecir_clima(response: Response):
   response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
@@ -203,6 +211,7 @@ def predecir_clima(response: Response):
       ],
       "timezone": "America/Bogota",
       "past_days": 1,
+      "forecast_days": 1,
       "current": [
           "temperature_2m",
           "relative_humidity_2m",
@@ -222,14 +231,45 @@ def predecir_clima(response: Response):
       )
   }
 
-  try:
-    response = requests.get(url, params=params, headers=headers, timeout=30)
-    response.raise_for_status()
-    data = response.json()
-  except Exception as e:
+  now_timestamp = time.monotonic()
+  cached_data = _open_meteo_cache["data"]
+  if cached_data is not None and now_timestamp < _open_meteo_cache["expires_at"]:
+    data = cached_data
+  else:
+    try:
+      response = requests.get(url, params=params, headers=headers, timeout=30)
+      if response.status_code == 429:
+        if cached_data is not None:
+          data = cached_data
+        else:
+          raise HTTPException(
+              status_code=503,
+              detail="Open-Meteo alcanzó temporalmente su límite de consultas. Intenta de nuevo en unos minutos.",
+          )
+      else:
+        response.raise_for_status()
+        data = response.json()
+        _open_meteo_cache["data"] = data
+        _open_meteo_cache["expires_at"] = (
+            now_timestamp + OPEN_METEO_CACHE_SECONDS
+        )
+    except HTTPException:
+      raise
+    except requests.RequestException as error:
+      raise HTTPException(
+          status_code=502,
+          detail=f"Error al conectar con Open-Meteo: {error}",
+      ) from error
+    except ValueError as error:
+      raise HTTPException(
+          status_code=502,
+          detail=f"Open-Meteo devolvió una respuesta inválida: {error}",
+      ) from error
+
+  if data is None:
     raise HTTPException(
-        status_code=502,
-        detail=f"Error al conectar con Open-Meteo: {str(e)}",
+        status_code=503,
+        detail="No hay datos meteorológicos disponibles temporalmente.",
     )
 
   df = pd.DataFrame(data["hourly"])
