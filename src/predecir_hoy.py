@@ -1,7 +1,10 @@
 from datetime import datetime
+from zoneinfo import ZoneInfo
 import joblib
 import pandas as pd
 import requests
+
+TIMEZONE = ZoneInfo("America/Bogota")
 
 # 1. Cargar el modelo entrenado
 MODELO_PATH = "modelo_xgb_valledupar.pkl"
@@ -32,6 +35,16 @@ params = {
     ],
     "timezone": "America/Bogota",
     "past_days": 1,  # Trae ayer y hoy para calcular bien los lags
+    "current": [
+        "temperature_2m",
+        "relative_humidity_2m",
+        "dew_point_2m",
+        "precipitation",
+        "cloud_cover",
+        "wind_direction_10m",
+        "surface_pressure",
+        "wind_speed_10m",
+    ],
 }
 
 response = requests.get(URL, params=params, timeout=30)
@@ -45,15 +58,6 @@ df["time"] = pd.to_datetime(df["time"])
 # 3. Ingeniería de características (exactamente la misma del entrenamiento)
 df["hora"] = df["time"].dt.hour
 df["mes"] = df["time"].dt.month
-
-for col in [
-    "precipitation",
-    "relative_humidity_2m",
-    "surface_pressure",
-    "dew_point_2m",
-]:
-  df[f"{col}_lag1"] = df[col].shift(1)
-  df[f"{col}_lag2"] = df[col].shift(2)
 
 # Definir las características exactas
 features = [
@@ -75,17 +79,48 @@ features = [
     "surface_pressure_lag2",
 ]
 
-# Filtrar específicamente para el día de ayer (30 de octubre de 2026) para cazar el diluvio
-fecha_objetivo = "2026-10-30"
-df_ayer = df[df["time"].dt.date == pd.to_datetime(fecha_objetivo).date()].copy()
+# Calcular la hora actual con la zona de Valledupar, no con la zona del servidor.
+ahora = datetime.now(TIMEZONE)
+hora_actual = ahora.replace(
+    minute=0, second=0, microsecond=0, tzinfo=None
+)
+df["es_hora_actual"] = df["time"] == hora_actual
 
-if not df_ayer.empty:
-  X_live = df_ayer[features]
-  df_ayer["probabilidad_lluvia"] = model.predict_proba(X_live)[:, 1] * 100
+# Usa las condiciones actuales de Open-Meteo para la fila actual.
+datos_actuales = data.get("current", {})
+if datos_actuales.get("time"):
+  tiempo_actual = pd.to_datetime(datos_actuales["time"]).to_pydatetime()
+  tiempo_actual = tiempo_actual.replace(tzinfo=None)
+  if tiempo_actual == hora_actual:
+    for col in features[:8]:
+      if col in datos_actuales:
+        df.loc[df["es_hora_actual"], col] = datos_actuales[col]
 
-  print(f"\n⛈️ Pronóstico y comportamiento para el día del diluvio ({fecha_objetivo}):")
+for col in [
+    "precipitation",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "dew_point_2m",
+]:
+  df[f"{col}_lag1"] = df[col].shift(1)
+  df[f"{col}_lag2"] = df[col].shift(2)
+
+df_hoy = df[
+    (df["time"].dt.date == hora_actual.date())
+    & (df["time"] >= hora_actual)
+].copy()
+df_hoy = df_hoy.dropna(subset=features)
+
+if not df_hoy.empty:
+  X_live = df_hoy[features]
+  df_hoy["probabilidad_lluvia"] = model.predict_proba(X_live)[:, 1] * 100
+
   print(
-      df_ayer[[
+      f"\n⛈️ Condiciones actuales ({ahora.strftime('%Y-%m-%d %H:%M')}) "
+      "y pronóstico restante del día:"
+  )
+  print(
+      df_hoy[[
           "time",
           "probabilidad_lluvia",
           "temperature_2m",
@@ -94,4 +129,4 @@ if not df_ayer.empty:
       ]].to_string(index=False)
   )
 else:
-  print("⚠️ No se encontraron datos para esa fecha.")
+  print("⚠️ No se encontraron datos para la hora actual o las horas restantes.")

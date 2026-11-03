@@ -7,6 +7,8 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import make_pipeline
 from sklearn.metrics import roc_auc_score, classification_report
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 import xgboost as xgb
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -41,13 +43,29 @@ features = [
 X = df[features]
 y = df["target_lluvia_binaria"]
 
-# 3. División temporal (Entrenar con pasado, probar con los últimos años)
-# Usaremos datos antes de 2023 para entrenar y 2023-2024 para test general
-train_mask = df["time"] < "2023-01-01"
-X_train, X_test = X[train_mask], X[~train_mask]
-y_train, y_test = y[train_mask], y[~train_mask]
+# 3. División temporal
+# 2016-2021 entrena, 2022 calibra las probabilidades y 2023-2024 prueba.
+# La calibración evita que el desbalance (solo unas pocas horas con lluvia)
+# haga que las probabilidades sean artificialmente tacañas.
+train_mask = df["time"] < "2022-01-01"
+calibration_mask = (df["time"] >= "2022-01-01") & (df["time"] < "2023-01-01")
+test_mask = df["time"] >= "2023-01-01"
+X_train, X_calibration, X_test = (
+    X[train_mask],
+    X[calibration_mask],
+    X[test_mask],
+)
+y_train, y_calibration, y_test = (
+    y[train_mask],
+    y[calibration_mask],
+    y[test_mask],
+)
 
-print(f"📊 Datos de entrenamiento: {len(X_train)} horas | Datos de prueba general: {len(X_test)} horas")
+print(
+    f"📊 Entrenamiento: {len(X_train)} horas | "
+    f"Calibración: {len(X_calibration)} horas | "
+    f"Prueba general: {len(X_test)} horas"
+)
 
 # ==========================================
 # MODELO 1: XGBOOST CLASSIFIER
@@ -62,9 +80,15 @@ xgb_model = xgb.XGBClassifier(
 )
 xgb_model.fit(X_train, y_train)
 
-preds_xgb = xgb_model.predict_proba(X_test)[:, 1]
+calibrated_model = CalibratedClassifierCV(
+    estimator=FrozenEstimator(xgb_model),
+    method="sigmoid",
+)
+calibrated_model.fit(X_calibration, y_calibration)
+
+preds_xgb = calibrated_model.predict_proba(X_test)[:, 1]
 auc_xgb = roc_auc_score(y_test, preds_xgb)
-print(f"🎯 AUC XGBoost (Test General): {auc_xgb:.4f}")
+print(f"🎯 AUC XGBoost calibrado (Test General): {auc_xgb:.4f}")
 
 # ==========================================
 # MODELO 2: REGRESIÓN LOGÍSTICA
@@ -92,7 +116,7 @@ df_diluvio = df[df["time"].dt.date == pd.to_datetime(fecha_diluvio).date()].copy
 
 if len(df_diluvio) > 0:
     X_d = df_diluvio[features]
-    df_diluvio["prob_xgb"] = xgb_model.predict_proba(X_d)[:, 1]
+    df_diluvio["prob_xgb"] = calibrated_model.predict_proba(X_d)[:, 1]
     df_diluvio["prob_lr"] = lr_model.predict_proba(X_d)[:, 1]
     
     print(df_diluvio[["time", "lluvia_ideam", "target_lluvia_binaria", "prob_xgb", "prob_lr"]].to_string(index=False))
@@ -100,6 +124,6 @@ else:
     print(f"⚠️ La fecha {fecha_diluvio} no está en el rango del dataset analizado (2016-2024). Ajusta 'fecha_diluvio' a una fecha dentro de ese rango para ver la hora del diluvio.")
 
 
-# Guardar el modelo XGBoost entrenado
-joblib.dump(xgb_model, "modelo_xgb_valledupar.pkl")
-print("💾 ¡Modelo XGBoost guardado exitosamente como 'modelo_xgb_valledupar.pkl'!")
+# Guardar el modelo calibrado, que conserva la interfaz predict_proba.
+joblib.dump(calibrated_model, "modelo_xgb_valledupar.pkl")
+print("💾 ¡Modelo XGBoost calibrado guardado exitosamente!")

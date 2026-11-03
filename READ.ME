@@ -1,0 +1,25 @@
+## Desarrollo local (Windows)
+
+```powershell
+$env:PYTHONIOENCODING='utf-8'; .\.venv\Scripts\python.exe -m uvicorn app:app --reload --host 127.0.0.1 --port 8000
+```
+
+Abrir: http://localhost:8000
+
+## Produccion en Render
+
+Build Command:
+
+```text
+pip install -r requirements.txt
+```
+
+Start Command:
+
+```text
+uvicorn app:app --host 0.0.0.0 --port $PORT
+```
+
+No usar `--reload` en produccion. El archivo `modelo_xgb_valledupar.pkl` debe estar incluido en el repositorio porque la API lo carga al iniciar.
+
+La respuesta muestra por separado la hora de consulta y la hora exacta del dato horario recibido desde Open-Meteo.

@@ -1,5 +1,7 @@
 from datetime import datetime
-from fastapi import FastAPI, HTTPException
+from pathlib import Path
+from zoneinfo import ZoneInfo
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 import joblib
 import pandas as pd
@@ -13,15 +15,8 @@ app = FastAPI(
     ),
 )
 
-# Cargar el modelo
-MODELO_PATH = "modelo_xgb_valledupar.pkl"
-try:
-  model = joblib.load(MODELO_PATH)
-  print("✅ Modelo cargado exitosamente en la API.")
-except Exception as e:
-  print(f"⚠️ Error al cargar el modelo: {e}")
-  model = None
-
+TIMEZONE = ZoneInfo("America/Bogota")
+BASE_DIR = Path(__file__).resolve().parent
 FEATURES = [
     "precipitation",
     "dew_point_2m",
@@ -41,6 +36,14 @@ FEATURES = [
     "surface_pressure_lag2",
 ]
 
+# Cargar el modelo
+MODELO_PATH = BASE_DIR / "modelo_xgb_valledupar.pkl"
+try:
+  model = joblib.load(MODELO_PATH)
+  print("✅ Modelo cargado exitosamente en la API.")
+except Exception as e:
+  print(f"⚠️ Error al cargar el modelo: {e}")
+  model = None
 
 @app.get("/", response_class=HTMLResponse)
 def home():
@@ -92,13 +95,34 @@ def home():
                 gridContainer.innerHTML = '';
 
                 try {
-                    const response = await fetch('/predecir');
+                    const response = await fetch('/predecir', { cache: 'no-store' });
                     if (!response.ok) throw new Error(`Error HTTP: ${response.status}`);
                     
                     const data = await response.json();
                     
                     loading.style.display = 'none';
                     gridContainer.classList.remove('hidden');
+
+                    const actual = data.actual;
+                    const actualCard = `
+                        <div class="md:col-span-2 lg:col-span-3 bg-emerald-950/40 border border-emerald-500/40 rounded-2xl p-5 shadow-xl">
+                            <div class="flex flex-wrap justify-between gap-2 items-center">
+                                <div>
+                                    <p class="text-emerald-300 text-xs uppercase tracking-wider font-semibold">Condiciones actuales</p>
+                                    <p class="text-slate-200 text-sm mt-1">Consulta: ${data.fecha_consulta} ${data.hora_consulta}</p>
+                                    <p class="text-slate-400 text-xs mt-1">Datos de Open-Meteo: ${data.datos_open_meteo_hora}</p>
+                                </div>
+                                <span class="text-4xl font-black text-white">${actual.probabilidad_lluvia_porcentaje}%</span>
+                            </div>
+                            <div class="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm text-slate-300">
+                                <span>🌡️ <strong>${actual.temperatura_celsius}°C</strong></span>
+                                <span>💧 Humedad: <strong>${actual.humedad_relativa}%</strong></span>
+                                <span>☁️ Nubosidad: <strong>${actual.nubosidad}%</strong></span>
+                                <span>🌧️ Precipitación: <strong>${actual.precipitacion_mm} mm</strong></span>
+                            </div>
+                        </div>
+                    `;
+                    gridContainer.innerHTML = actualCard;
 
                     data.pronostico_horario.forEach(item => {
                         let prob = item.probabilidad_lluvia_porcentaje;
@@ -155,7 +179,9 @@ def home():
 
 
 @app.get("/predecir")
-def predecir_clima():
+def predecir_clima(response: Response):
+  response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate"
+  response.headers["Pragma"] = "no-cache"
   if model is None:
     raise HTTPException(
         status_code=500, detail="El modelo no está cargado en el servidor."
@@ -177,6 +203,16 @@ def predecir_clima():
       ],
       "timezone": "America/Bogota",
       "past_days": 1,
+      "current": [
+          "temperature_2m",
+          "relative_humidity_2m",
+          "dew_point_2m",
+          "precipitation",
+          "cloud_cover",
+          "wind_direction_10m",
+          "surface_pressure",
+          "wind_speed_10m",
+      ],
   }
 
   headers = {
@@ -202,37 +238,81 @@ def predecir_clima():
   df["hora"] = df["time"].dt.hour
   df["mes"] = df["time"].dt.month
 
-  for col in [
+  now = datetime.now(TIMEZONE)
+  current_hour = now.replace(minute=0, second=0, microsecond=0).replace(tzinfo=None)
+
+  # Las dos horas anteriores son necesarias para los lags del modelo.
+  df["es_hora_actual"] = df["time"] == current_hour
+  current_rows = df[df["es_hora_actual"]].copy()
+  if current_rows.empty:
+    raise HTTPException(
+        status_code=404,
+        detail=f"Open-Meteo no devolvió datos para la hora actual ({current_hour}).",
+    )
+
+  # Para la hora actual usamos también el bloque `current` de Open-Meteo,
+  # en vez de mostrar una hora de pronóstico como si fuera una observación.
+  current_data = data.get("current", {})
+  if current_data.get("time"):
+    current_time = pd.to_datetime(current_data["time"]).to_pydatetime()
+    current_time = current_time.replace(tzinfo=None)
+    if current_time == current_hour:
+      for column in FEATURES[:8]:
+        if column in current_data:
+          df.loc[df["es_hora_actual"], column] = current_data[column]
+
+  for column in [
       "precipitation",
       "relative_humidity_2m",
       "surface_pressure",
       "dew_point_2m",
   ]:
-    df[f"{col}_lag1"] = df[col].shift(1)
-    df[f"{col}_lag2"] = df[col].shift(2)
+    df[f"{column}_lag1"] = df[column].shift(1)
+    df[f"{column}_lag2"] = df[column].shift(2)
 
-  hoy_str = datetime.now().strftime("%Y-%m-%d")
-  df["solo_fecha"] = df["time"].dt.strftime("%Y-%m-%d")
-  df_hoy = df[df["solo_fecha"] == hoy_str].copy()
-
-  if df_hoy.empty:
+  current_rows = df[df["es_hora_actual"]].copy()
+  current_rows = current_rows.dropna(subset=FEATURES)
+  if current_rows.empty:
     raise HTTPException(
-        status_code=404, detail="No se encontraron datos para el día actual."
+        status_code=502,
+        detail="No hay suficientes datos horarios anteriores para calcular la probabilidad actual.",
     )
 
-  X_live = df_hoy[FEATURES]
-  df_hoy["probabilidad_lluvia"] = model.predict_proba(X_live)[:, 1] * 100
+  X_current = current_rows[FEATURES]
+  current_rows["probabilidad_lluvia"] = (
+      model.predict_proba(X_current)[:, 1] * 100
+  )
 
-  resultado = []
-  for _, row in df_hoy.iterrows():
-    resultado.append({
+  today = current_hour.date()
+  df_future = df[
+      (df["time"].dt.date == today) & (df["time"] >= current_hour)
+  ].copy()
+  df_future = df_future.dropna(subset=FEATURES)
+  if not df_future.empty:
+    X_live = df_future[FEATURES]
+    df_future["probabilidad_lluvia"] = model.predict_proba(X_live)[:, 1] * 100
+
+  def serializar_fila(row):
+    return {
         "tiempo": str(row["time"]),
         "probabilidad_lluvia_porcentaje": round(
-            row["probabilidad_lluvia"], 2
-        ),  # type: ignore
-        "temperatura_celsius": row["temperature_2m"],
-        "humedad_relativa": row["relative_humidity_2m"],
-        "nubosidad": row["cloud_cover"],
-    })
+            float(row["probabilidad_lluvia"]), 2
+        ),
+        "temperatura_celsius": float(row["temperature_2m"]),
+        "humedad_relativa": float(row["relative_humidity_2m"]),
+        "nubosidad": float(row["cloud_cover"]),
+        "precipitacion_mm": float(row["precipitation"]),
+    }
 
-  return {"ciudad": "Valledupar", "pronostico_horario": resultado}
+  actual = serializar_fila(current_rows.iloc[0])
+  resultado = [serializar_fila(row) for _, row in df_future.iterrows()]
+  datos_open_meteo_hora = actual["tiempo"]
+
+  return {
+      "ciudad": "Valledupar",
+      "fecha_consulta": now.strftime("%Y-%m-%d"),
+      "hora_consulta": now.strftime("%H:%M"),
+      "datos_open_meteo_hora": datos_open_meteo_hora,
+      "actual": actual,
+      "pronostico_horario": resultado,
+  }
