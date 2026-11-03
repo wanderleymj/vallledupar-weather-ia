@@ -23,7 +23,7 @@ URL = "https://api.open-meteo.com/v1/forecast"
 params = {
     "latitude": 10.44,
     "longitude": -73.25,
-    "hourly": [
+    "hourly": ",".join([
         "precipitation",
         "dew_point_2m",
         "cloud_cover",
@@ -32,10 +32,10 @@ params = {
         "relative_humidity_2m",
         "surface_pressure",
         "wind_speed_10m",
-    ],
+    ]),
     "timezone": "America/Bogota",
     "past_days": 1,  # Trae ayer y hoy para calcular bien los lags
-    "current": [
+    "current": ",".join([
         "temperature_2m",
         "relative_humidity_2m",
         "dew_point_2m",
@@ -44,7 +44,7 @@ params = {
         "wind_direction_10m",
         "surface_pressure",
         "wind_speed_10m",
-    ],
+    ]),
 }
 
 response = requests.get(URL, params=params, timeout=30)

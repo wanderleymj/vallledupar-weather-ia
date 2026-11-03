@@ -199,7 +199,7 @@ def predecir_clima(response: Response):
   params = {
       "latitude": 10.44,
       "longitude": -73.25,
-      "hourly": [
+      "hourly": ",".join([
           "precipitation",
           "dew_point_2m",
           "cloud_cover",
@@ -208,11 +208,11 @@ def predecir_clima(response: Response):
           "relative_humidity_2m",
           "surface_pressure",
           "wind_speed_10m",
-      ],
+      ]),
       "timezone": "America/Bogota",
       "past_days": 1,
       "forecast_days": 1,
-      "current": [
+      "current": ",".join([
           "temperature_2m",
           "relative_humidity_2m",
           "dew_point_2m",
@@ -221,7 +221,7 @@ def predecir_clima(response: Response):
           "wind_direction_10m",
           "surface_pressure",
           "wind_speed_10m",
-      ],
+      ]),
   }
 
   headers = {
